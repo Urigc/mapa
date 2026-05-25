@@ -1,8 +1,20 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+// ════════════════════════════════════════════════════════════════════
+//  App — Mapa Inteligente de Obras Publicas
+//  Temascaltepec de Gonzalez, Estado de Mexico
+//
+//  Composicion:
+//   - MapProvider (estado global de filtros + obra seleccionada)
+//   - SmartMap    (capa base + marcadores + popup por obra)
+//   - HeaderBar   (titulo + reloj)
+//   - StatsPanel  (izquierda: metricas globales)
+//   - FiltersPanel(derecha: busqueda + estado + comunidad)
+//   - HudCorners + ScanLine (estetica HUD)
+// ════════════════════════════════════════════════════════════════════
+import { useState, useEffect, useCallback } from 'react';
 import { MapContainer, TileLayer, Popup, useMapEvents, Marker } from 'react-leaflet';
 import MarkerClusterGroup from 'react-leaflet-cluster';
 import { motion } from 'framer-motion';
-import { MapProvider } from '@/context/MapContext';
+import { MapProvider, useMapState } from '@/context/MapContext';
 import type { PublicObra } from '@/types';
 import {
   TEMASCALTEPEC_CENTER,
@@ -11,28 +23,18 @@ import {
   MAX_ZOOM,
   getObraCoordinates,
   getStatusColor,
-  getStatusLabel,
-  formatCurrency,
-  formatDate,
 } from '@/utils/coordinates';
-import {
-  FileText,
-  DollarSign,
-  TrendingUp,
-  Building2,
-  Calendar,
-  Users,
-  MapPin,
-  Loader2,
-  AlertTriangle,
-} from 'lucide-react';
+import { MapPin, Loader2, AlertTriangle } from 'lucide-react';
 import * as L from 'leaflet';
+import { StatsPanel } from '@/components/StatsPanel';
+import { FiltersPanel } from '@/components/FiltersPanel';
+import { PopupCard } from '@/components/PopupCard';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'https://backend-obraspublicas.onrender.com';
 
-/* ------------------------------------------------------------------ */
-/*  API                                                                */
-/* ------------------------------------------------------------------ */
+// ────────────────────────────────────────────────────────────────────
+//  API
+// ────────────────────────────────────────────────────────────────────
 
 async function fetchObrasPublic(): Promise<PublicObra[]> {
   const res = await fetch(`${API_BASE}/api/public/obras`);
@@ -50,23 +52,40 @@ async function fetchResumenPublic() {
   return json.data;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Project Marker Component                                           */
-/* ------------------------------------------------------------------ */
+// ────────────────────────────────────────────────────────────────────
+//  Marcadores con icono custom (por estado)
+// ────────────────────────────────────────────────────────────────────
 
-function createCustomIcon(color: string): L.DivIcon {
+function createCustomIcon(color: string, status: string): L.DivIcon {
+  // Icono triangular para retrasada (matchea el screenshot del usuario)
+  if (status === 'retrasada') {
+    return L.divIcon({
+      className: 'custom-marker',
+      iconSize: [22, 22],
+      iconAnchor: [11, 11],
+      html: `
+        <div style="
+          width: 22px; height: 22px; border-radius: 6px;
+          background: ${color};
+          border: 2px solid rgba(255,255,255,0.85);
+          box-shadow: 0 0 14px ${color}AA, 0 0 28px ${color}55;
+          display: flex; align-items: center; justify-content: center;
+          color: white; font-weight: 700; font-size: 12px; line-height: 1;
+          cursor: pointer;
+        ">!</div>
+      `,
+    });
+  }
   return L.divIcon({
     className: 'custom-marker',
-    iconSize: [16, 16],
-    iconAnchor: [8, 8],
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
     html: `
       <div style="
-        width: 16px;
-        height: 16px;
-        border-radius: 50%;
+        width: 18px; height: 18px; border-radius: 50%;
         background: ${color};
-        border: 2px solid rgba(255,255,255,0.8);
-        box-shadow: 0 0 10px ${color}80, 0 0 20px ${color}40;
+        border: 2px solid rgba(255,255,255,0.85);
+        box-shadow: 0 0 12px ${color}AA, 0 0 24px ${color}55;
         cursor: pointer;
       "></div>
     `,
@@ -83,8 +102,8 @@ function ProjectMarker({
   onSelect: () => void;
 }) {
   const color = getStatusColor(obra.status);
-  const position = getObraCoordinates(obra.id, obra.regionComunidad);
-  const icon = createCustomIcon(color);
+  const position = getObraCoordinates(obra.id, obra.regionComunidad, obra.regionBarrio);
+  const icon = createCustomIcon(color, obra.status);
 
   return (
     <Marker
@@ -95,102 +114,22 @@ function ProjectMarker({
       {isSelected && (
         <Popup
           closeButton={false}
-          autoPan={true}
-          autoPanPadding={[20, 20]}
-          eventHandlers={{ remove: () => { /* handled by parent */ } }}
+          autoPan
+          autoPanPadding={[24, 24]}
+          maxWidth={340}
+          minWidth={320}
           className="dark-popup"
         >
-          <PopupContent obra={obra} />
+          <PopupCard obra={obra} />
         </Popup>
       )}
     </Marker>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Popup Content                                                      */
-/* ------------------------------------------------------------------ */
-
-function PopupContent({ obra }: { obra: PublicObra }) {
-  const statusColor = getStatusColor(obra.status);
-
-  return (
-    <div className="text-left" style={{ width: 300, color: 'var(--text-primary)' }}>
-      <div className="px-1 pt-1 pb-2" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
-              <span
-                className="w-2 h-2 rounded-full flex-shrink-0"
-                style={{ background: statusColor, boxShadow: `0 0 6px ${statusColor}80` }}
-              />
-              <span className="text-[10px] font-medium uppercase tracking-wide" style={{ color: statusColor }}>
-                {getStatusLabel(obra.status)}
-              </span>
-            </div>
-            <h3 className="text-[13px] font-bold leading-tight" style={{ fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}>
-              {obra.nombre}
-            </h3>
-          </div>
-        </div>
-        <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
-          {obra.regionComunidad} {obra.regionBarrio ? `· ${obra.regionBarrio}` : ''}
-        </p>
-      </div>
-
-      <div className="py-2 space-y-2">
-        <PopupRow icon={<FileText size={12} />} label="Expediente" value={obra.expediente} />
-        <PopupRow icon={<DollarSign size={12} />} label="Presupuesto" value={formatCurrency(obra.presupuestoTotal)} />
-
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <TrendingUp size={12} style={{ color: 'var(--text-muted)' }} />
-            <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>Avance Fisico</span>
-            <span className="text-[11px] font-semibold ml-auto" style={{ color: statusColor }}>{obra.avanceFisico}%</span>
-          </div>
-          <div className="h-1.5 rounded-full overflow-hidden ml-4" style={{ background: 'rgba(255,255,255,0.06)' }}>
-            <div
-              className="h-full rounded-full transition-all duration-1000"
-              style={{ width: `${obra.avanceFisico}%`, background: statusColor }}
-            />
-          </div>
-        </div>
-
-        <PopupRow icon={<Building2 size={12} />} label="Constructora" value={obra.constructoraNombre} />
-        <div className="flex gap-4">
-          <PopupRow icon={<Calendar size={12} />} label="Inicio" value={formatDate(obra.fechaInicio)} />
-          <PopupRow icon={<Calendar size={12} />} label="Fin" value={formatDate(obra.fechaFin)} />
-        </div>
-        <PopupRow icon={<Users size={12} />} label="Beneficiarios" value={obra.beneficiarios} />
-      </div>
-
-      <div className="pt-2 flex items-center justify-between" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-        <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>
-          {obra.totalInformes} informe{obra.totalInformes !== 1 ? 's' : ''}
-        </span>
-        <span className="text-[9px] truncate max-w-[120px]" style={{ color: 'var(--text-muted)' }}>
-          {obra.supervisorNombre}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function PopupRow({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
-  return (
-    <div className="flex items-start gap-1.5">
-      <span className="mt-0.5 flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{icon}</span>
-      <div className="flex-1 min-w-0">
-        <span className="text-[9px] uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>{label}</span>
-        <div className="text-[11px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>{value}</div>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Map Event Handler                                                  */
-/* ------------------------------------------------------------------ */
+// ────────────────────────────────────────────────────────────────────
+//  Map event handler para deseleccionar al hacer click fuera
+// ────────────────────────────────────────────────────────────────────
 
 function MapEventHandler({ onDeselect }: { onDeselect: () => void }) {
   useMapEvents({
@@ -204,9 +143,9 @@ function MapEventHandler({ onDeselect }: { onDeselect: () => void }) {
   return null;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Header Bar                                                         */
-/* ------------------------------------------------------------------ */
+// ────────────────────────────────────────────────────────────────────
+//  Header Bar
+// ────────────────────────────────────────────────────────────────────
 
 function HeaderBar() {
   const [time, setTime] = useState(new Date());
@@ -218,13 +157,22 @@ function HeaderBar() {
 
   return (
     <div className="fixed top-0 left-0 right-0 z-[1000] pointer-events-none">
-      <div className="glass-panel mx-3 mt-3 px-5 py-3 flex items-center justify-between pointer-events-auto" style={{ borderRadius: 16 }}>
+      <div
+        className="glass-panel mx-3 mt-3 px-5 py-3 flex items-center justify-between pointer-events-auto"
+        style={{ borderRadius: 16 }}
+      >
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'rgba(59,130,246,0.15)' }}>
+          <div
+            className="w-8 h-8 rounded-lg flex items-center justify-center"
+            style={{ background: 'rgba(59,130,246,0.15)' }}
+          >
             <MapPin size={16} style={{ color: '#3b82f6' }} />
           </div>
           <div>
-            <h1 className="text-[13px] font-bold" style={{ fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}>
+            <h1
+              className="text-[13px] font-bold"
+              style={{ fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}
+            >
               Mapa Inteligente — Obras Publicas
             </h1>
             <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
@@ -233,10 +181,16 @@ function HeaderBar() {
           </div>
         </div>
         <div className="text-right">
-          <div className="text-[12px] font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}>
+          <div
+            className="text-[12px] font-semibold"
+            style={{ fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}
+          >
             {time.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
           </div>
-          <div className="text-[9px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+          <div
+            className="text-[9px] uppercase tracking-wider"
+            style={{ color: 'var(--text-muted)' }}
+          >
             {time.toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
           </div>
         </div>
@@ -245,12 +199,12 @@ function HeaderBar() {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  HUD Corners                                                        */
-/* ------------------------------------------------------------------ */
+// ────────────────────────────────────────────────────────────────────
+//  HUD Corners + Scan Line (estetica)
+// ────────────────────────────────────────────────────────────────────
 
 function HudCorners() {
-  const cornerStyle: React.CSSProperties = {
+  const c: React.CSSProperties = {
     position: 'fixed',
     width: 24,
     height: 24,
@@ -260,17 +214,13 @@ function HudCorners() {
   };
   return (
     <>
-      <div style={{ ...cornerStyle, top: 12, left: 12, borderTop: '2px solid', borderLeft: '2px solid' }} />
-      <div style={{ ...cornerStyle, top: 12, right: 12, borderTop: '2px solid', borderRight: '2px solid' }} />
-      <div style={{ ...cornerStyle, bottom: 12, left: 12, borderBottom: '2px solid', borderLeft: '2px solid' }} />
-      <div style={{ ...cornerStyle, bottom: 12, right: 12, borderBottom: '2px solid', borderRight: '2px solid' }} />
+      <div style={{ ...c, top: 12, left: 12, borderTop: '2px solid', borderLeft: '2px solid' }} />
+      <div style={{ ...c, top: 12, right: 12, borderTop: '2px solid', borderRight: '2px solid' }} />
+      <div style={{ ...c, bottom: 12, left: 12, borderBottom: '2px solid', borderLeft: '2px solid' }} />
+      <div style={{ ...c, bottom: 12, right: 12, borderBottom: '2px solid', borderRight: '2px solid' }} />
     </>
   );
 }
-
-/* ------------------------------------------------------------------ */
-/*  Scan Line Effect                                                   */
-/* ------------------------------------------------------------------ */
 
 function ScanLine() {
   return (
@@ -284,90 +234,33 @@ function ScanLine() {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  KPI Panel                                                          */
-/* ------------------------------------------------------------------ */
+// ────────────────────────────────────────────────────────────────────
+//  SmartMap — capa de mapa + marcadores, consume filteredObras del context
+// ────────────────────────────────────────────────────────────────────
 
-function KpiPanel({ obras }: { obras: PublicObra[] }) {
-  const total = obras.length;
-  const completadas = obras.filter(o => o.status === 'completada').length;
-  const enProgreso = obras.filter(o => o.status === 'en_progreso').length;
-  const retrasadas = obras.filter(o => o.status === 'retrasada').length;
-  const inversion = obras.reduce((sum, o) => sum + (o.presupuestoTotal || 0), 0);
+function SmartMap() {
+  const { filteredObras, selectedObra, setSelectedObra } = useMapState();
 
-  const kpis = [
-    { label: 'Obras Activas', value: total, color: '#3b82f6', isText: false },
-    { label: 'Completadas', value: completadas, color: '#10b981', isText: false },
-    { label: 'En Progreso', value: enProgreso, color: '#f59e0b', isText: false },
-    { label: 'Retrasadas', value: retrasadas, color: '#ef4444', isText: false },
-    { label: 'Inversion Total', value: inversion >= 1000000 ? `$${(inversion/1000000).toFixed(1)}M` : `$${(inversion/1000).toFixed(0)}K`, color: '#8b5cf6', isText: true },
-  ];
-
-  return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[1000] flex gap-2">
-      {kpis.map((kpi, i) => (
-        <motion.div
-          key={kpi.label}
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: i * 0.08, duration: 0.4 }}
-          className="glass-panel px-4 py-2.5 flex flex-col items-center"
-          style={{ borderRadius: 12, minWidth: 80 }}
-        >
-          <span className="text-[15px] font-bold" style={{ fontFamily: 'var(--font-display)', color: kpi.color }}>
-            {kpi.isText ? kpi.value : kpi.value.toLocaleString('es-MX')}
-          </span>
-          <span className="text-[8px] uppercase tracking-wider mt-0.5" style={{ color: 'var(--text-muted)' }}>
-            {kpi.label}
-          </span>
-        </motion.div>
-      ))}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Smart Map                                                          */
-/* ------------------------------------------------------------------ */
-
-function SmartMap({ obras }: { obras: PublicObra[] }) {
-  const [selectedObra, setSelectedObra] = useState<PublicObra | null>(null);
-  const popupRef = useRef<L.Popup | null>(null);
-
-  const createClusterCustomIcon = useCallback((cluster: any): L.DivIcon => {
+  const createClusterIcon = useCallback((cluster: { getChildCount: () => number }): L.DivIcon => {
     const count = cluster.getChildCount();
-    const size = Math.min(Math.max(30, count * 4), 56);
+    const size = Math.min(Math.max(32, count * 4), 56);
     return L.divIcon({
       className: '',
       iconSize: [size, size],
       iconAnchor: [size / 2, size / 2],
       html: `
         <div style="
-          width: ${size}px;
-          height: ${size}px;
-          border-radius: 50%;
-          background: rgba(59, 130, 246, 0.18);
-          border: 2px solid rgba(59, 130, 246, 0.45);
-          box-shadow: 0 0 16px rgba(59, 130, 246, 0.2);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          color: white;
-          font-family: 'Syne', sans-serif;
-          font-weight: 700;
-          font-size: ${Math.max(11, size * 0.3)}px;
+          width: ${size}px; height: ${size}px; border-radius: 50%;
+          background: rgba(59,130,246,0.18);
+          border: 2px solid rgba(59,130,246,0.45);
+          box-shadow: 0 0 16px rgba(59,130,246,0.25);
+          display: flex; align-items: center; justify-content: center;
+          color: white; font-family: 'Syne', sans-serif;
+          font-weight: 700; font-size: ${Math.max(11, size * 0.3)}px;
         ">${count}</div>
       `,
     });
   }, []);
-
-  const handleSelect = (obra: PublicObra) => {
-    setSelectedObra(prev => prev?.id === obra.id ? null : obra);
-  };
-
-  const handleDeselect = () => {
-    setSelectedObra(null);
-  };
 
   return (
     <div className="absolute inset-0 z-0">
@@ -377,8 +270,8 @@ function SmartMap({ obras }: { obras: PublicObra[] }) {
         minZoom={MIN_ZOOM}
         maxZoom={MAX_ZOOM}
         style={{ width: '100%', height: '100%', background: '#080c0f' }}
-        zoomControl={true}
-        attributionControl={true}
+        zoomControl
+        attributionControl
       >
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/">CARTO</a>'
@@ -387,20 +280,22 @@ function SmartMap({ obras }: { obras: PublicObra[] }) {
           maxZoom={20}
         />
 
-        <MapEventHandler onDeselect={handleDeselect} />
+        <MapEventHandler onDeselect={() => setSelectedObra(null)} />
 
         <MarkerClusterGroup
           showCoverageOnHover={false}
           spiderLegPolylineOptions={{ opacity: 0 }}
-          iconCreateFunction={createClusterCustomIcon}
+          iconCreateFunction={createClusterIcon}
           maxClusterRadius={60}
         >
-          {obras.map((obra) => (
+          {filteredObras.map((obra) => (
             <ProjectMarker
               key={obra.id}
               obra={obra}
               isSelected={selectedObra?.id === obra.id}
-              onSelect={() => handleSelect(obra)}
+              onSelect={() =>
+                setSelectedObra(selectedObra?.id === obra.id ? null : obra)
+              }
             />
           ))}
         </MarkerClusterGroup>
@@ -409,9 +304,9 @@ function SmartMap({ obras }: { obras: PublicObra[] }) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Loading Screen                                                     */
-/* ------------------------------------------------------------------ */
+// ────────────────────────────────────────────────────────────────────
+//  Loading + Error
+// ────────────────────────────────────────────────────────────────────
 
 function LoadingScreen() {
   return (
@@ -423,10 +318,6 @@ function LoadingScreen() {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Error Screen                                                       */
-/* ------------------------------------------------------------------ */
-
 function ErrorScreen({ error, onRetry }: { error: string; onRetry: () => void }) {
   return (
     <div className="fixed inset-0 flex flex-col items-center justify-center px-6" style={{ background: '#080c0f' }}>
@@ -437,13 +328,15 @@ function ErrorScreen({ error, onRetry }: { error: string; onRetry: () => void })
       <p className="text-sm text-center mb-6" style={{ color: 'var(--text-secondary)' }}>
         No se pudo cargar la informacion del mapa. Verifica tu conexion a internet.
       </p>
-      <p className="text-[10px] mb-6 text-center" style={{ color: 'var(--text-muted)' }}>
-        {error}
-      </p>
+      <p className="text-[10px] mb-6 text-center" style={{ color: 'var(--text-muted)' }}>{error}</p>
       <button
         onClick={onRetry}
         className="px-6 py-2.5 rounded-lg text-sm font-medium transition-all"
-        style={{ background: 'rgba(59,130,246,0.15)', color: '#3b82f6', border: '1px solid rgba(59,130,246,0.3)' }}
+        style={{
+          background: 'rgba(59,130,246,0.15)',
+          color: '#3b82f6',
+          border: '1px solid rgba(59,130,246,0.3)',
+        }}
       >
         Reintentar
       </button>
@@ -451,9 +344,29 @@ function ErrorScreen({ error, onRetry }: { error: string; onRetry: () => void })
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Main App                                                           */
-/* ------------------------------------------------------------------ */
+// ────────────────────────────────────────────────────────────────────
+//  Composicion final
+// ────────────────────────────────────────────────────────────────────
+
+function AppShell({ obras }: { obras: PublicObra[] }) {
+  const { filteredObras } = useMapState();
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.4 }}
+      className="relative w-screen h-screen overflow-hidden"
+      style={{ background: '#080c0f' }}
+    >
+      <SmartMap />
+      <HeaderBar />
+      <HudCorners />
+      <ScanLine />
+      <StatsPanel obras={obras} filteredObras={filteredObras} />
+      <FiltersPanel obras={obras} />
+    </motion.div>
+  );
+}
 
 export default function App() {
   const [obras, setObras] = useState<PublicObra[]>([]);
@@ -469,30 +382,23 @@ export default function App() {
         fetchResumenPublic().catch(() => null),
       ]);
       setObras(obrasData);
-    } catch (err: any) {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Error desconocido';
       console.error('Error cargando datos:', err);
-      setError(err.message || 'Error desconocido');
+      setError(message);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
+  useEffect(() => { loadData(); }, [loadData]);
 
   if (loading) return <LoadingScreen />;
-  if (error) return <ErrorScreen error={error} onRetry={loadData} />;
+  if (error)   return <ErrorScreen error={error} onRetry={loadData} />;
 
   return (
     <MapProvider obras={obras}>
-      <div className="relative w-screen h-screen overflow-hidden" style={{ background: '#080c0f' }}>
-        <SmartMap obras={obras} />
-        <HeaderBar />
-        <HudCorners />
-        <ScanLine />
-        <KpiPanel obras={obras} />
-      </div>
+      <AppShell obras={obras} />
     </MapProvider>
   );
 }
