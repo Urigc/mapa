@@ -10,8 +10,8 @@
 //   - FiltersPanel(derecha: busqueda + estado + comunidad)
 //   - HudCorners + ScanLine (estetica HUD)
 // ════════════════════════════════════════════════════════════════════
-import { useState, useEffect, useCallback } from 'react';
-import { MapContainer, TileLayer, Popup, useMapEvents, Marker } from 'react-leaflet';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { MapContainer, TileLayer, Popup, useMap, Marker } from 'react-leaflet';
 import MarkerClusterGroup from 'react-leaflet-cluster';
 import { motion } from 'framer-motion';
 import { MapProvider, useMapState } from '@/context/MapContext';
@@ -56,7 +56,7 @@ async function fetchResumenPublic() {
 //  Marcadores con icono custom (por estado)
 // ────────────────────────────────────────────────────────────────────
 
-function createCustomIcon(color: string, status: string): L.DivIcon {
+function createCustomIcon(color: string, status: string, obraId: string): L.DivIcon {
   // Icono triangular para retrasada (matchea el screenshot del usuario)
   if (status === 'retrasada') {
     return L.divIcon({
@@ -64,7 +64,7 @@ function createCustomIcon(color: string, status: string): L.DivIcon {
       iconSize: [22, 22],
       iconAnchor: [11, 11],
       html: `
-        <div style="
+        <div data-obra-id="${obraId}" style="
           width: 22px; height: 22px; border-radius: 6px;
           background: ${color};
           border: 2px solid rgba(255,255,255,0.85);
@@ -81,7 +81,7 @@ function createCustomIcon(color: string, status: string): L.DivIcon {
     iconSize: [18, 18],
     iconAnchor: [9, 9],
     html: `
-      <div style="
+      <div data-obra-id="${obraId}" style="
         width: 18px; height: 18px; border-radius: 50%;
         background: ${color};
         border: 2px solid rgba(255,255,255,0.85);
@@ -103,26 +103,35 @@ function ProjectMarker({
 }) {
   const color = getStatusColor(obra.status);
   const position = getObraCoordinates(obra.id, obra.regionComunidad, obra.regionBarrio);
-  const icon = createCustomIcon(color, obra.status);
+  const icon = createCustomIcon(color, obra.status, obra.id);
+  const markerRef = useRef<L.Marker | null>(null);
+
+  // El cluster intercepta el click del marker (stopPropagation), así que el bind automático
+  // de Leaflet no abre el popup. Lo abrimos imperativamente cuando isSelected cambia.
+  useEffect(() => {
+    const marker = markerRef.current;
+    if (!marker) return;
+    if (isSelected) marker.openPopup();
+    else marker.closePopup();
+  }, [isSelected]);
 
   return (
     <Marker
+      ref={markerRef}
       position={position}
       icon={icon}
       eventHandlers={{ click: onSelect }}
     >
-      {isSelected && (
-        <Popup
-          closeButton={false}
-          autoPan
-          autoPanPadding={[24, 24]}
-          maxWidth={340}
-          minWidth={320}
-          className="dark-popup"
-        >
-          <PopupCard obra={obra} />
-        </Popup>
-      )}
+      <Popup
+        closeButton={false}
+        autoPan
+        autoPanPadding={[24, 24]}
+        maxWidth={340}
+        minWidth={320}
+        className="dark-popup"
+      >
+        <PopupCard obra={obra} />
+      </Popup>
     </Marker>
   );
 }
@@ -131,15 +140,47 @@ function ProjectMarker({
 //  Map event handler para deseleccionar al hacer click fuera
 // ────────────────────────────────────────────────────────────────────
 
-function MapEventHandler({ onDeselect }: { onDeselect: () => void }) {
-  useMapEvents({
-    click(e) {
-      const target = e.originalEvent.target as HTMLElement;
-      if (!target.closest('.leaflet-marker-icon') && !target.closest('.leaflet-popup')) {
-        onDeselect();
+function MapEventHandler({
+  obras,
+  onSelect,
+  onDeselect,
+}: {
+  obras: PublicObra[];
+  onSelect: (obra: PublicObra) => void;
+  onDeselect: () => void;
+}) {
+  // Workaround: react-leaflet-cluster@2.x es incompatible con react-leaflet@5 / React 19,
+  // y los eventHandlers del <Marker>, así como `map.on('click')`, no se disparan dentro
+  // del cluster (cluster usa stopPropagation). Escuchamos clicks al nivel DOM del contenedor
+  // del mapa y resolvemos la obra por el data-obra-id que inyectamos en el icono.
+  const map = useMap();
+  const obrasRef = useRef(obras);
+  obrasRef.current = obras;
+
+  useEffect(() => {
+    const container = map.getContainer();
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest('.leaflet-popup') || target.closest('.leaflet-control')) return;
+
+      const markerHost = target.closest('.leaflet-marker-icon') as HTMLElement | null;
+      if (markerHost) {
+        const idEl = markerHost.querySelector('[data-obra-id]') as HTMLElement | null;
+        const obraId = idEl?.dataset.obraId ?? markerHost.getAttribute('data-obra-id');
+        if (obraId) {
+          const obra = obrasRef.current.find((o) => o.id === obraId);
+          if (obra) onSelect(obra);
+        }
+        // Si es un cluster icon (sin data-obra-id), no hacemos nada: Leaflet maneja el zoom.
+        return;
       }
-    },
-  });
+      onDeselect();
+    };
+    container.addEventListener('click', handler);
+    return () => container.removeEventListener('click', handler);
+  }, [map, onSelect, onDeselect]);
+
   return null;
 }
 
@@ -280,7 +321,13 @@ function SmartMap() {
           maxZoom={20}
         />
 
-        <MapEventHandler onDeselect={() => setSelectedObra(null)} />
+        <MapEventHandler
+          obras={filteredObras}
+          onSelect={(obra) =>
+            setSelectedObra(selectedObra?.id === obra.id ? null : obra)
+          }
+          onDeselect={() => setSelectedObra(null)}
+        />
 
         <MarkerClusterGroup
           showCoverageOnHover={false}

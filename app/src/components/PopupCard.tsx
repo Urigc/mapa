@@ -1,10 +1,28 @@
 // ════════════════════════════════════════════════════════════════════
 //  PopupCard — Ficha tecnica que aparece al hacer click en un puntero
-//  Muestra Estado, Expediente, Nombre, Comunidad, Presupuesto,
-//  Constructora, Fechas y barra de Avance Fisico.
+//  Muestra Estado, Expediente, Nombre, Comunidad (Region), Presupuesto,
+//  Constructora, Fechas (inicio + entrega) y barra de Avance Fisico
+//  basada en el ultimo informe del supervisor (0% si no hay informes).
+//
+//  Mapeo a la BD (publico via /api/public/obras):
+//   - Region       → obra.regionComunidad + obra.regionBarrio
+//   - Presupuesto  → PresupuestoObra.presupuesto_total
+//   - Constructora → Constructora.nombre_const
+//   - Fecha inicio → Obra.fecha_inicio
+//   - Fecha entrega→ Obra.fecha_final
+//   - Avance fisico→ Informe.porcentaje_avance_fisico (mas reciente)
+//                     0 si totalInformes === 0
 // ════════════════════════════════════════════════════════════════════
-import { MapPin, DollarSign, User, Calendar, ChevronRight } from 'lucide-react';
-import type { PublicObra } from '@/types';
+import {
+  MapPin,
+  DollarSign,
+  User,
+  Calendar,
+  Clock,
+  CheckCircle2,
+  AlertTriangle,
+} from 'lucide-react';
+import type { PublicObra, ObraStatus } from '@/types';
 import {
   getStatusColor,
   getStatusLabel,
@@ -12,15 +30,23 @@ import {
   formatDateShort,
 } from '@/utils/coordinates';
 
-export function PopupCard({
-  obra,
-  onDetails,
-}: {
-  obra: PublicObra;
-  onDetails?: () => void;
-}) {
+function StatusIcon({ status }: { status: ObraStatus | string }) {
+  const size = 11;
+  switch (status) {
+    case 'completada':
+      return <CheckCircle2 size={size} />;
+    case 'retrasada':
+      return <AlertTriangle size={size} />;
+    case 'en_progreso':
+    default:
+      return <Clock size={size} />;
+  }
+}
+
+export function PopupCard({ obra }: { obra: PublicObra }) {
   const statusColor = getStatusColor(obra.status);
   const statusLabel = getStatusLabel(obra.status);
+  const avance = Math.max(0, Math.min(100, obra.avanceFisico ?? 0));
 
   return (
     <div
@@ -39,25 +65,20 @@ export function PopupCard({
           borderBottom: '1px solid rgba(255,255,255,0.06)',
         }}
       >
-        <div className="flex items-center gap-2">
-          <span
-            className="flex items-center justify-center"
-            style={{
-              width: 22, height: 22, borderRadius: 7,
-              background: `${statusColor}22`,
-              border: `1px solid ${statusColor}40`,
-              color: statusColor,
-            }}
-          >
-            <span style={{
-              width: 7, height: 7, borderRadius: '50%',
-              background: statusColor,
-              boxShadow: `0 0 6px ${statusColor}`,
-            }} />
-          </span>
+        <div
+          className="flex items-center gap-1.5"
+          style={{
+            padding: '4px 9px',
+            borderRadius: 999,
+            background: `${statusColor}1A`,
+            border: `1px solid ${statusColor}40`,
+            color: statusColor,
+          }}
+        >
+          <StatusIcon status={obra.status} />
           <span
             className="text-[10px] uppercase tracking-wider font-semibold"
-            style={{ color: statusColor, fontFamily: 'var(--font-display)' }}
+            style={{ fontFamily: 'var(--font-display)' }}
           >
             {statusLabel}
           </span>
@@ -70,8 +91,8 @@ export function PopupCard({
         </span>
       </div>
 
-      {/* Title */}
-      <div style={{ padding: '12px 14px 6px' }}>
+      {/* Titulo */}
+      <div style={{ padding: '12px 14px 8px' }}>
         <h3
           className="text-[15px] font-bold leading-tight"
           style={{ fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}
@@ -80,11 +101,15 @@ export function PopupCard({
         </h3>
       </div>
 
-      {/* Datos */}
-      <div style={{ padding: '4px 14px 10px' }} className="flex flex-col gap-2">
+      {/* Datos (Region, Presupuesto, Constructora, Fechas) */}
+      <div style={{ padding: '4px 14px 10px' }} className="flex flex-col gap-2.5">
         <Row
           icon={<MapPin size={12} style={{ color: '#3b82f6' }} />}
-          text={[obra.regionComunidad, obra.regionBarrio].filter(Boolean).join(', ') || 'Sin comunidad'}
+          text={
+            [obra.regionComunidad, obra.regionBarrio]
+              .filter(Boolean)
+              .join(', ') || 'Sin comunidad'
+          }
         />
         <Row
           icon={<DollarSign size={12} style={{ color: '#10b981' }} />}
@@ -102,8 +127,8 @@ export function PopupCard({
         />
       </div>
 
-      {/* Avance */}
-      <div style={{ padding: '4px 14px 12px' }}>
+      {/* Avance fisico (ultimo informe del supervisor) */}
+      <div style={{ padding: '6px 14px 14px' }}>
         <div className="flex items-center justify-between mb-1.5">
           <span
             className="text-[10px] uppercase tracking-wider"
@@ -112,10 +137,10 @@ export function PopupCard({
             Avance fisico
           </span>
           <span
-            className="text-[12px] font-bold"
+            className="text-[13px] font-bold"
             style={{ fontFamily: 'var(--font-display)', color: statusColor }}
           >
-            {obra.avanceFisico ?? 0}%
+            {avance}%
           </span>
         </div>
         <div
@@ -128,7 +153,7 @@ export function PopupCard({
         >
           <div
             style={{
-              width: `${Math.max(0, Math.min(100, obra.avanceFisico ?? 0))}%`,
+              width: `${avance}%`,
               height: '100%',
               background: `linear-gradient(90deg, ${statusColor}AA, ${statusColor})`,
               boxShadow: `0 0 8px ${statusColor}66`,
@@ -136,46 +161,6 @@ export function PopupCard({
             }}
           />
         </div>
-      </div>
-
-      {/* Footer actions */}
-      <div
-        style={{
-          padding: '10px 14px 12px',
-          borderTop: '1px solid rgba(255,255,255,0.06)',
-          display: 'flex',
-          gap: 6,
-        }}
-      >
-        <button
-          onClick={onDetails}
-          className="flex-1 text-[11px] font-medium transition-all"
-          style={{
-            padding: '8px 10px',
-            borderRadius: 10,
-            background: 'rgba(8,12,15,0.7)',
-            border: '1px solid rgba(255,255,255,0.08)',
-            color: 'var(--text-primary)',
-            cursor: 'pointer',
-          }}
-        >
-          Ver detalle
-        </button>
-        <button
-          onClick={onDetails}
-          className="flex items-center justify-center transition-all"
-          style={{
-            width: 32,
-            borderRadius: 10,
-            background: 'rgba(59,130,246,0.15)',
-            border: '1px solid rgba(59,130,246,0.3)',
-            color: '#60a5fa',
-            cursor: 'pointer',
-          }}
-          aria-label="Detalle"
-        >
-          <ChevronRight size={14} />
-        </button>
       </div>
     </div>
   );
@@ -196,7 +181,7 @@ function Row({
     <div className="flex items-center gap-2">
       <span style={{ flexShrink: 0 }}>{icon}</span>
       {label && (
-        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+        <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
           {label}
         </span>
       )}
