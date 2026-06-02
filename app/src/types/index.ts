@@ -77,3 +77,15 @@ export interface ApiResponse<T> {
   data: T;
   message: string;
 }
+
+
+export interface ImagenInforme {
+  id: string;
+  informeId: string;
+  url: string;
+  rutaR2: string;
+  nombreOriginal: string;
+  tipoMime: string | null;
+  tamanoBytes: number | null;
+  fechaSubida: string | null;
+}
