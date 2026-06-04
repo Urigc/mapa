@@ -1,26 +1,18 @@
 // ════════════════════════════════════════════════════════════════════
-//  PopupCard — Ficha técnica que aparece al hacer click en un marcador
-//
-//  Muestra: Estado, Expediente, Nombre, Comunidad (Región), Presupuesto,
-//  Constructora, Fechas (inicio + entrega) y barra de Avance Físico.
+//  PopupCard — Ficha técnica sobre marcador del mapa
 //
 //  GALERÍA DE EVIDENCIA FOTOGRÁFICA:
-//  Al pulsar "Ver Fotografías" se obtienen las imágenes de la obra
-//  via GET /api/public/obras/<id>/imagenes.
-//  Se selecciona 1 imagen de cada uno de los últimos 4 informes
-//  distintos (si la obra tiene menos de 4 informes con imágenes,
-//  se muestran las que haya; si ningún informe tiene imágenes → estado vacío).
+//  Botón "Ver Fotografías" → GET /api/public/obras/<id>/imagenes
+//  → 1 imagen de cada uno de los últimos 4 informes distintos.
 //
-//  Mapeo a la BD (público via /api/public/obras):
-//   - Region       → obra.regionComunidad + obra.regionBarrio
-//   - Presupuesto  → PresupuestoObra.presupuesto_total
-//   - Constructora → Constructora.nombre_const
-//   - Fecha inicio → Obra.fecha_inicio
-//   - Fecha entrega→ Obra.fecha_final
-//   - Avance fisico→ Informe.porcentaje_avance_fisico (más reciente)
-//                     0 si totalInformes === 0
+//  BUG FIX v2:
+//  - Lightbox montado en document.body vía createPortal para escapar
+//    el overflow:hidden / stacking context del popup de Leaflet.
+//  - onError en cada <img> con fallback visual + console.warn de la URL
+//    para facilitar el diagnóstico de CORS/R2.
 // ════════════════════════════════════════════════════════════════════
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   MapPin,
@@ -47,14 +39,11 @@ import {
 } from '@/utils/coordinates';
 
 // ────────────────────────────────────────────────────────────────
-//  Utilidad: a partir de TODAS las imágenes de la obra (ordenadas
-//  por el backend por fecha_subida DESC), devuelve ≤4 imágenes,
-//  una por cada uno de los últimos 4 informes distintos.
+//  pickGalleryImages
+//  Devuelve ≤4 imágenes, una por cada uno de los últimos 4 informes
+//  distintos. El backend ya entrega DESC por fecha_subida.
 // ────────────────────────────────────────────────────────────────
 function pickGalleryImages(all: ImagenInforme[]): ImagenInforme[] {
-  // El backend devuelve desc por fecha_subida.
-  // Iteramos para obtener la primera imagen de cada informeId distinto,
-  // tomando solo hasta 4 informes.
   const seen = new Set<string>();
   const result: ImagenInforme[] = [];
   for (const img of all) {
@@ -75,13 +64,78 @@ function StatusIcon({ status }: { status: ObraStatus | string }) {
   switch (status) {
     case 'completada':  return <CheckCircle2 size={size} />;
     case 'retrasada':   return <AlertTriangle size={size} />;
-    case 'en_progreso':
     default:            return <Clock size={size} />;
   }
 }
 
 // ────────────────────────────────────────────────────────────────
-//  Lightbox — modal de imagen a pantalla completa dentro del popup
+//  ImageWithFallback
+//  Muestra la imagen con un fallback si el src falla (CORS, URL
+//  incorrecta, bucket privado, etc.) y loggea la URL para debug.
+// ────────────────────────────────────────────────────────────────
+function ImageWithFallback({
+  src,
+  alt,
+  style,
+  onLoad,
+}: {
+  src: string;
+  alt: string;
+  style?: React.CSSProperties;
+  onLoad?: () => void;
+}) {
+  const [errored, setErrored] = useState(false);
+
+  const handleError = useCallback(() => {
+    console.warn(
+      '[PopupCard] No se pudo cargar la imagen. Verifica:\n' +
+      '  1. Que el bucket R2 tenga acceso público habilitado.\n' +
+      '  2. Que R2_PUBLIC_URL en el backend sea correcto.\n' +
+      '  3. Que los CORS del bucket permitan el origen del mapa.\n' +
+      '  URL fallida:', src
+    );
+    setErrored(true);
+  }, [src]);
+
+  if (errored) {
+    return (
+      <div
+        style={{
+          ...style,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 4,
+          background: 'rgba(255,255,255,0.04)',
+          border: '1px dashed rgba(255,255,255,0.10)',
+          borderRadius: 7,
+          color: 'var(--text-muted)',
+        }}
+      >
+        <ImageOff size={16} />
+        <span style={{ fontSize: 9, textAlign: 'center', padding: '0 4px' }}>
+          Sin acceso
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      style={style}
+      onLoad={onLoad}
+      onError={handleError}
+      loading="lazy"
+    />
+  );
+}
+
+// ────────────────────────────────────────────────────────────────
+//  Lightbox — montado en document.body para escapar el stacking
+//  context del popup de Leaflet (overflow:hidden, z-index propio).
 // ────────────────────────────────────────────────────────────────
 function Lightbox({
   images,
@@ -95,16 +149,16 @@ function Lightbox({
   const [current, setCurrent] = useState(initialIndex);
   const [imgLoaded, setImgLoaded] = useState(false);
 
-  const prev = () => {
+  const prev = useCallback(() => {
     setImgLoaded(false);
     setCurrent((c) => (c - 1 + images.length) % images.length);
-  };
-  const next = () => {
+  }, [images.length]);
+
+  const next = useCallback(() => {
     setImgLoaded(false);
     setCurrent((c) => (c + 1) % images.length);
-  };
+  }, [images.length]);
 
-  // Navegar con teclado
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -113,11 +167,11 @@ function Lightbox({
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  });
+  }, [onClose, prev, next]);
 
   const img = images[current];
 
-  return (
+  const portal = (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
@@ -127,6 +181,7 @@ function Lightbox({
       style={{
         position: 'fixed',
         inset: 0,
+        // z-index mayor que el popup de Leaflet (z-index 700) y el HUD (1000)
         zIndex: 99999,
         background: 'rgba(4,7,11,0.92)',
         display: 'flex',
@@ -136,7 +191,7 @@ function Lightbox({
         WebkitBackdropFilter: 'blur(8px)',
       }}
     >
-      {/* Cerrar */}
+      {/* Botón cerrar */}
       <button
         onClick={onClose}
         style={{
@@ -146,7 +201,7 @@ function Lightbox({
           background: 'rgba(255,255,255,0.08)',
           border: '1px solid rgba(255,255,255,0.12)',
           borderRadius: 8,
-          color: 'var(--text-primary)',
+          color: '#e8ecf1',
           width: 36,
           height: 36,
           display: 'flex',
@@ -159,7 +214,7 @@ function Lightbox({
         <X size={16} />
       </button>
 
-      {/* Imagen */}
+      {/* Imagen central */}
       <motion.div
         key={current}
         initial={{ opacity: 0, scale: 0.95 }}
@@ -169,7 +224,6 @@ function Lightbox({
         style={{
           position: 'relative',
           maxWidth: 'min(90vw, 640px)',
-          maxHeight: 'min(80vh, 480px)',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
@@ -177,17 +231,20 @@ function Lightbox({
         }}
       >
         {!imgLoaded && (
-          <div style={{
-            width: 320,
-            height: 240,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}>
-            <Loader2 size={28} style={{ color: '#3b82f6' }} className="animate-spin" />
+          <div
+            style={{
+              width: 320,
+              height: 240,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Loader2 size={28} style={{ color: '#3b82f6', animation: 'spin 1s linear infinite' }} />
           </div>
         )}
-        <img
+
+        <ImageWithFallback
           src={img.url}
           alt={img.nombreOriginal}
           onLoad={() => setImgLoaded(true)}
@@ -201,23 +258,25 @@ function Lightbox({
             objectFit: 'contain',
           }}
         />
-        {/* Nombre de archivo y contador */}
+
         {imgLoaded && (
-          <div style={{
-            color: 'var(--text-muted)',
-            fontSize: 10,
-            textAlign: 'center',
-            maxWidth: '100%',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}>
-            {img.nombreOriginal} &nbsp;·&nbsp; {current + 1} / {images.length}
+          <div
+            style={{
+              color: 'rgba(148,163,184,0.7)',
+              fontSize: 10,
+              textAlign: 'center',
+              maxWidth: '100%',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {img.nombreOriginal}&nbsp;·&nbsp;{current + 1} / {images.length}
           </div>
         )}
       </motion.div>
 
-      {/* Controles de navegación (solo si hay más de 1 imagen) */}
+      {/* Navegación (solo si hay > 1 imagen) */}
       {images.length > 1 && (
         <>
           <button
@@ -230,7 +289,7 @@ function Lightbox({
               background: 'rgba(255,255,255,0.08)',
               border: '1px solid rgba(255,255,255,0.12)',
               borderRadius: 8,
-              color: 'var(--text-primary)',
+              color: '#e8ecf1',
               width: 36,
               height: 36,
               display: 'flex',
@@ -251,7 +310,7 @@ function Lightbox({
               background: 'rgba(255,255,255,0.08)',
               border: '1px solid rgba(255,255,255,0.12)',
               borderRadius: 8,
-              color: 'var(--text-primary)',
+              color: '#e8ecf1',
               width: 36,
               height: 36,
               display: 'flex',
@@ -266,10 +325,13 @@ function Lightbox({
       )}
     </motion.div>
   );
+
+  // ★ Portal: monta el overlay en document.body, fuera del popup de Leaflet
+  return createPortal(portal, document.body);
 }
 
 // ────────────────────────────────────────────────────────────────
-//  GallerySection — Strip de miniaturas + estado de carga/vacío
+//  GallerySection
 // ────────────────────────────────────────────────────────────────
 type GalleryState = 'idle' | 'loading' | 'loaded' | 'error';
 
@@ -278,7 +340,6 @@ function GallerySection({ obraId }: { obraId: string }) {
   const [images, setImages] = useState<ImagenInforme[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
-  // Referencia para evitar doble-fetch si el componente se remonta
   const fetchedRef = useRef(false);
 
   const load = useCallback(async () => {
@@ -287,8 +348,7 @@ function GallerySection({ obraId }: { obraId: string }) {
     setState('loading');
     try {
       const all = await fetchImagenesObra(obraId);
-      const picked = pickGalleryImages(all);
-      setImages(picked);
+      setImages(pickGalleryImages(all));
       setState('loaded');
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : 'Error al cargar imágenes');
@@ -296,7 +356,7 @@ function GallerySection({ obraId }: { obraId: string }) {
     }
   }, [obraId]);
 
-  // ── Botón inicial ──
+  // ── Botón inicial ──────────────────────────────────────────
   if (state === 'idle') {
     return (
       <div style={{ padding: '0 14px 14px' }}>
@@ -335,7 +395,7 @@ function GallerySection({ obraId }: { obraId: string }) {
     );
   }
 
-  // ── Cargando ──
+  // ── Cargando ───────────────────────────────────────────────
   if (state === 'loading') {
     return (
       <div style={{ padding: '0 14px 14px' }}>
@@ -350,25 +410,25 @@ function GallerySection({ obraId }: { obraId: string }) {
             borderRadius: 8,
             background: 'rgba(59,130,246,0.06)',
             border: '1px solid rgba(59,130,246,0.14)',
-            color: 'var(--text-muted)',
+            color: 'rgba(148,163,184,0.7)',
             fontSize: 10,
           }}
         >
-          <Loader2 size={12} className="animate-spin" />
+          <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />
           Cargando imágenes...
         </div>
       </div>
     );
   }
 
-  // ── Error ──
+  // ── Error ──────────────────────────────────────────────────
   if (state === 'error') {
     return (
       <div style={{ padding: '0 14px 14px' }}>
         <div
           style={{
             width: '100%',
-            padding: '8px 0',
+            padding: '8px 12px',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -387,7 +447,7 @@ function GallerySection({ obraId }: { obraId: string }) {
     );
   }
 
-  // ── Cargado — sin imágenes ──
+  // ── Cargado — sin imágenes ─────────────────────────────────
   if (state === 'loaded' && images.length === 0) {
     return (
       <div style={{ padding: '0 14px 14px' }}>
@@ -402,7 +462,7 @@ function GallerySection({ obraId }: { obraId: string }) {
             borderRadius: 8,
             background: 'rgba(255,255,255,0.03)',
             border: '1px solid rgba(255,255,255,0.06)',
-            color: 'var(--text-muted)',
+            color: 'rgba(148,163,184,0.7)',
             fontSize: 10,
           }}
         >
@@ -413,7 +473,7 @@ function GallerySection({ obraId }: { obraId: string }) {
     );
   }
 
-  // ── Cargado — grid de miniaturas ──
+  // ── Cargado — grid de miniaturas ───────────────────────────
   return (
     <>
       <div
@@ -439,13 +499,11 @@ function GallerySection({ obraId }: { obraId: string }) {
               cursor: 'pointer',
               background: 'rgba(255,255,255,0.04)',
               aspectRatio: '1 / 1',
-              position: 'relative',
             }}
           >
-            <img
+            <ImageWithFallback
               src={img.url}
               alt={img.nombreOriginal}
-              loading="lazy"
               style={{
                 width: '100%',
                 height: '100%',
@@ -453,18 +511,12 @@ function GallerySection({ obraId }: { obraId: string }) {
                 display: 'block',
                 transition: 'transform 0.25s',
               }}
-              onMouseEnter={(e) =>
-                ((e.currentTarget as HTMLImageElement).style.transform = 'scale(1.06)')
-              }
-              onMouseLeave={(e) =>
-                ((e.currentTarget as HTMLImageElement).style.transform = 'scale(1)')
-              }
             />
           </motion.button>
         ))}
       </div>
 
-      {/* Lightbox — renderizado fuera del popup para no heredar overflow:hidden */}
+      {/* ★ Lightbox via Portal — escapa del DOM del popup Leaflet */}
       <AnimatePresence>
         {lightboxIndex !== null && (
           <Lightbox
@@ -475,140 +527,6 @@ function GallerySection({ obraId }: { obraId: string }) {
         )}
       </AnimatePresence>
     </>
-  );
-}
-
-// ────────────────────────────────────────────────────────────────
-//  PopupCard — componente raíz exportado
-// ────────────────────────────────────────────────────────────────
-export function PopupCard({ obra }: { obra: PublicObra }) {
-  const statusColor = getStatusColor(obra.status);
-  const statusLabel = getStatusLabel(obra.status);
-  const avance = Math.max(0, Math.min(100, obra.avanceFisico ?? 0));
-
-  return (
-    <div
-      className="text-left"
-      style={{
-        width: 320,
-        color: 'var(--text-primary)',
-        fontFamily: 'var(--font-body)',
-      }}
-    >
-      {/* ── Header: estado + expediente ── */}
-      <div
-        className="flex items-center justify-between"
-        style={{
-          padding: '12px 14px 10px',
-          borderBottom: '1px solid rgba(255,255,255,0.06)',
-        }}
-      >
-        <div
-          className="flex items-center gap-1.5"
-          style={{
-            padding: '4px 9px',
-            borderRadius: 999,
-            background: `${statusColor}1A`,
-            border: `1px solid ${statusColor}40`,
-            color: statusColor,
-          }}
-        >
-          <StatusIcon status={obra.status} />
-          <span
-            className="text-[10px] uppercase tracking-wider font-semibold"
-            style={{ fontFamily: 'var(--font-display)' }}
-          >
-            {statusLabel}
-          </span>
-        </div>
-        <span
-          className="text-[10px] uppercase tracking-wider"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          {obra.expediente || '—'}
-        </span>
-      </div>
-
-      {/* ── Título ── */}
-      <div style={{ padding: '12px 14px 8px' }}>
-        <h3
-          className="text-[15px] font-bold leading-tight"
-          style={{ fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}
-        >
-          {obra.nombre || 'Obra sin nombre'}
-        </h3>
-      </div>
-
-      {/* ── Datos (Región, Presupuesto, Constructora, Fechas) ── */}
-      <div style={{ padding: '4px 14px 10px' }} className="flex flex-col gap-2.5">
-        <Row
-          icon={<MapPin size={12} style={{ color: '#3b82f6' }} />}
-          text={
-            [obra.regionComunidad, obra.regionBarrio]
-              .filter(Boolean)
-              .join(', ') || 'Sin comunidad'
-          }
-        />
-        <Row
-          icon={<DollarSign size={12} style={{ color: '#10b981' }} />}
-          label="Presupuesto:"
-          text={formatCurrency(obra.presupuestoTotal)}
-          textBold
-        />
-        <Row
-          icon={<User size={12} style={{ color: '#a78bfa' }} />}
-          text={obra.constructoraNombre || 'Constructora sin asignar'}
-        />
-        <Row
-          icon={<Calendar size={12} style={{ color: '#f59e0b' }} />}
-          text={`${formatDateShort(obra.fechaInicio)} — ${formatDateShort(obra.fechaFin)}`}
-        />
-      </div>
-
-      {/* ── Avance físico (último informe del supervisor) ── */}
-      <div style={{ padding: '6px 14px 14px' }}>
-        <div className="flex items-center justify-between mb-1.5">
-          <span
-            className="text-[10px] uppercase tracking-wider"
-            style={{ color: 'var(--text-muted)' }}
-          >
-            Avance físico
-          </span>
-          <span
-            className="text-[13px] font-bold"
-            style={{ fontFamily: 'var(--font-display)', color: statusColor }}
-          >
-            {avance}%
-          </span>
-        </div>
-        <div
-          className="overflow-hidden"
-          style={{
-            height: 5,
-            borderRadius: 999,
-            background: 'rgba(255,255,255,0.06)',
-          }}
-        >
-          <div
-            style={{
-              width: `${avance}%`,
-              height: '100%',
-              background: `linear-gradient(90deg, ${statusColor}AA, ${statusColor})`,
-              boxShadow: `0 0 8px ${statusColor}66`,
-              transition: 'width 0.8s ease',
-            }}
-          />
-        </div>
-      </div>
-
-      {/* ── Separador ── */}
-      <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '0 14px' }} />
-
-      {/* ── Galería de evidencia fotográfica ── */}
-      <div style={{ paddingTop: 10 }}>
-        <GallerySection obraId={obra.id} />
-      </div>
-    </div>
   );
 }
 
@@ -636,14 +554,137 @@ function Row({
       )}
       <span
         className="text-[11px] truncate"
-        style={{
-          color: 'var(--text-primary)',
-          fontWeight: textBold ? 700 : 400,
-        }}
+        style={{ color: 'var(--text-primary)', fontWeight: textBold ? 700 : 400 }}
         title={text}
       >
         {text}
       </span>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────
+//  PopupCard — exportado
+// ────────────────────────────────────────────────────────────────
+export function PopupCard({ obra }: { obra: PublicObra }) {
+  const statusColor = getStatusColor(obra.status);
+  const statusLabel = getStatusLabel(obra.status);
+  const avance = Math.max(0, Math.min(100, obra.avanceFisico ?? 0));
+
+  return (
+    <div
+      className="text-left"
+      style={{
+        width: 320,
+        color: 'var(--text-primary)',
+        fontFamily: 'var(--font-body)',
+      }}
+    >
+      {/* Header: estado + expediente */}
+      <div
+        className="flex items-center justify-between"
+        style={{ padding: '12px 14px 10px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}
+      >
+        <div
+          className="flex items-center gap-1.5"
+          style={{
+            padding: '4px 9px',
+            borderRadius: 999,
+            background: `${statusColor}1A`,
+            border: `1px solid ${statusColor}40`,
+            color: statusColor,
+          }}
+        >
+          <StatusIcon status={obra.status} />
+          <span
+            className="text-[10px] uppercase tracking-wider font-semibold"
+            style={{ fontFamily: 'var(--font-display)' }}
+          >
+            {statusLabel}
+          </span>
+        </div>
+        <span
+          className="text-[10px] uppercase tracking-wider"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          {obra.expediente || '—'}
+        </span>
+      </div>
+
+      {/* Título */}
+      <div style={{ padding: '12px 14px 8px' }}>
+        <h3
+          className="text-[15px] font-bold leading-tight"
+          style={{ fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}
+        >
+          {obra.nombre || 'Obra sin nombre'}
+        </h3>
+      </div>
+
+      {/* Datos */}
+      <div style={{ padding: '4px 14px 10px' }} className="flex flex-col gap-2.5">
+        <Row
+          icon={<MapPin size={12} style={{ color: '#3b82f6' }} />}
+          text={
+            [obra.regionComunidad, obra.regionBarrio].filter(Boolean).join(', ') ||
+            'Sin comunidad'
+          }
+        />
+        <Row
+          icon={<DollarSign size={12} style={{ color: '#10b981' }} />}
+          label="Presupuesto:"
+          text={formatCurrency(obra.presupuestoTotal)}
+          textBold
+        />
+        <Row
+          icon={<User size={12} style={{ color: '#a78bfa' }} />}
+          text={obra.constructoraNombre || 'Constructora sin asignar'}
+        />
+        <Row
+          icon={<Calendar size={12} style={{ color: '#f59e0b' }} />}
+          text={`${formatDateShort(obra.fechaInicio)} — ${formatDateShort(obra.fechaFin)}`}
+        />
+      </div>
+
+      {/* Avance físico */}
+      <div style={{ padding: '6px 14px 14px' }}>
+        <div className="flex items-center justify-between mb-1.5">
+          <span
+            className="text-[10px] uppercase tracking-wider"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            Avance físico
+          </span>
+          <span
+            className="text-[13px] font-bold"
+            style={{ fontFamily: 'var(--font-display)', color: statusColor }}
+          >
+            {avance}%
+          </span>
+        </div>
+        <div
+          className="overflow-hidden"
+          style={{ height: 5, borderRadius: 999, background: 'rgba(255,255,255,0.06)' }}
+        >
+          <div
+            style={{
+              width: `${avance}%`,
+              height: '100%',
+              background: `linear-gradient(90deg, ${statusColor}AA, ${statusColor})`,
+              boxShadow: `0 0 8px ${statusColor}66`,
+              transition: 'width 0.8s ease',
+            }}
+          />
+        </div>
+      </div>
+
+      {/* Separador */}
+      <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '0 14px' }} />
+
+      {/* Galería */}
+      <div style={{ paddingTop: 10 }}>
+        <GallerySection obraId={obra.id} />
+      </div>
     </div>
   );
 }
