@@ -11,8 +11,9 @@
 //   - status === 'retrasada'    → "Alerta de retraso: avance solo X%"
 //                                  (fecha = fechaFin)
 //   - totalInformes > 0         → "Avance fisico del X% reportado"
-//                                  (fecha = hoy - 7d, proxy del ultimo
-//                                  informe del supervisor)
+//                                  (fecha = ultimoInformeFecha del backend
+//                                  [año+mes del último informe, día=1];
+//                                  fallback a hoy-7d si no disponible)
 //   - default                   → "Obra registrada en sistema"
 //                                  (fecha = fechaInicio)
 //
@@ -77,10 +78,16 @@ function deriveEvents(obras: PublicObra[]): ActivityEvent[] {
     }
 
     if ((o.totalInformes ?? 0) > 0) {
-      // Proxy temporal: aprox una semana atras (no exponemos la fecha
-      // del informe en el endpoint publico)
-      const fecha = new Date(today);
-      fecha.setDate(fecha.getDate() - 7);
+      // Usar la fecha real del último informe (año+mes) expuesta por el backend.
+      // Si por alguna razón no llega (obras cargadas antes del deploy del fix),
+      // caemos al heurístico anterior como safety net.
+      let fecha: Date;
+      if (o.ultimoInformeFecha) {
+        const parsed = new Date(o.ultimoInformeFecha + 'T00:00:00');
+        fecha = isNaN(parsed.getTime()) ? new Date(today.getTime() - 7 * 86_400_000) : parsed;
+      } else {
+        fecha = new Date(today.getTime() - 7 * 86_400_000);
+      }
       out.push({
         obraId: o.id,
         obraNombre: nombre,
