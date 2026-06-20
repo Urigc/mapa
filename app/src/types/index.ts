@@ -19,6 +19,8 @@ export interface PublicObra {
   constructoraTipo: string;
   supervisorNombre: string;
   totalInformes: number;
+  // ISO-8601 del informe más reciente, o null si no tiene ninguno
+  ultimoInformeFecha: string | null;
 }
 
 export interface Region {
@@ -76,4 +78,19 @@ export interface ApiResponse<T> {
   success: boolean;
   data: T;
   message: string;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  IMÁGENES DE INFORME (Cloudflare R2)
+//  Mapeo 1:1 con ImagenInforme.to_dict() del backend
+// ════════════════════════════════════════════════════════════════
+export interface ImagenInforme {
+  id: string;
+  informeId: string;
+  url: string;
+  rutaR2: string;
+  nombreOriginal: string;
+  tipoMime: string | null;
+  tamanoBytes: number | null;
+  fechaSubida: string | null;
 }
